@@ -1,0 +1,11 @@
+proc add(x: int, y: int) int {
+	ret x + y;
+}
+
+proc main() void {
+	let x = 10;
+	let y = 10;
+
+	let res = add(x, y);
+	println(res);
+}

@@ -1,0 +1,2 @@
+[alias]
+mtxc = "run --manifest-path matrix/Cargo.toml --bin mtxc"
