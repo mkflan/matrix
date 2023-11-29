@@ -16,5 +16,7 @@ fn main() -> anyhow::Result<()> {
     let code = fs::read_to_string(args.program_path)?;
     let tokens = lexer::lex(&code)?;
 
+    dbg!(tokens);
+
     Ok(())
 }
