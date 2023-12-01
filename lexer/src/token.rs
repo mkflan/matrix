@@ -7,10 +7,10 @@ pub struct Span {
 }
 
 impl Span {
-    pub(crate) fn of_token(token_len: usize, cursor_y: usize) -> Self {
+    pub(crate) fn of_token(token_len: usize, pos: usize) -> Self {
         Span {
-            start: cursor_y - token_len,
-            end: cursor_y,
+            start: pos - token_len,
+            end: pos,
         }
     }
 }
@@ -25,6 +25,33 @@ impl From<Range<usize>> for Span {
     fn from(Range { start, end }: Range<usize>) -> Self {
         Span { start, end }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegerBase {
+    /// Integer literals starting with "0b".
+    Binary = 2,
+
+    /// Integer literals starting with "0o".
+    Octal = 8,
+
+    /// Integer literals with no prefix.
+    Decimal = 10,
+
+    /// Integer literals starting with "0x".
+    Hexadecimal = 16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiteralKind {
+    /// Character literals.
+    Character,
+
+    /// String literals.
+    String,
+
+    /// Integer literals.
+    Integer { base: IntegerBase },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,12 +82,6 @@ pub enum TokenKind {
 
     /// .
     Period,
-
-    /// '
-    SingleQuote,
-
-    /// "
-    DoubleQuote,
 
     /// ,
     Comma,
@@ -97,6 +118,9 @@ pub enum TokenKind {
 
     /// Any identifiers, including keywords.
     Ident,
+
+    /// Literals.
+    Literal(LiteralKind),
 
     /// End of file.
     EoF,
