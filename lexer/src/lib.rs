@@ -1,5 +1,6 @@
 #![warn(rust_2018_idioms)]
 #![allow(unused)]
+#![feature(let_chains)]
 
 pub mod token;
 
@@ -52,6 +53,18 @@ impl<'src> Lexer<'src> {
         next
     }
 
+    /// Return whether an expected character was consumed or not.
+    fn expected_consumed(&mut self, expected: char) -> bool {
+        if let Some(&c) = self.peek() {
+            if c == expected {
+                self.advance();
+                return true;
+            }
+        }
+
+        false
+    }
+
     /// Check if the end of the source has been reached.
     fn at_end(&mut self) -> bool {
         self.peek().is_none()
@@ -62,61 +75,98 @@ impl<'src> Lexer<'src> {
         let mut len = 1; // the first character of the identifier has already been consumed.
 
         while !self.at_end() && self.peek().unwrap().is_alphanumeric() {
-            self.advance();
-            len += 1;
+            self.advance_with_callback(|| len += 1);
         }
 
         self.create_token(Ident, len)
     }
 
     /// Lex a character literal.
+    // TODO: handle when the  literal contains an escaped single quote. currently,
+    // it will panic as it believes the escaped quote is the closing quote.
     fn lex_char_literal(&mut self) -> Token {
-        if self.at_end() {
-            panic!("unterminated character literal. expected closing quote found EoF");
+        let mut len = 1; // The opening quote has already been consumed.
+
+        while !self.at_end() && self.peek().unwrap() != &'\'' {
+            self.advance_with_callback(|| len += 1);
+        }
+
+        // The character contains more than one codepoint.
+        if len > 2 {
+            panic!("character literals can only contain one codepoint");
+        }
+
+        if !self.expected_consumed('\'') {
+            panic!("unterminated character literal. expected closing quote");
         }
 
         self.create_token(Literal(Character), 3)
     }
 
     /// Lex a string literal.
+    // TODO: handle when the literal contains an escaped double quote. currently,
+    // it will panic as it believes the escaped quote is the closing quote.
     fn lex_string_literal(&mut self) -> Token {
-        let mut len = 1; // the opening quote has already been consumed.
+        let mut len = 1; // The opening quote has already been consumed.
 
         while !self.at_end() && self.peek().unwrap() != &'"' {
-            self.advance();
-            len += 1;
+            self.advance_with_callback(|| len += 1);
         }
 
-        if self.at_end() {
-            panic!("unterminated string literal. expected closing quote found EoF")
+        if !self.expected_consumed('"') {
+            panic!("unterminated string literal. expected closing quote");
         }
 
-        self.advance();
         len += 1;
         self.create_token(Literal(String), len)
     }
 
     /// Lex a numerical literal.
-    /// TODO: lex decimals
     fn lex_numerical_literal(&mut self, first_digit: char) -> Token {
-        let mut len = 1; // the first digit has already been consumed.
-        let base = match (first_digit, self.advance_with_callback(|| len += 1)) {
-            ('0', Some('b')) => Binary,
-            ('0', Some('o')) => Octal,
-            ('0', Some('x')) => Hexadecimal,
-            ('0', Some(ch)) => panic!("invalid integer base specifier"),
-            _ => Decimal,
-        };
+        let mut len = 1; // The first digit has already been consumed.
 
-        while !self.at_end()
-            && (self.peek().unwrap().is_numeric()
-                || self.peek().unwrap() == &'_'
-                || ('A'..='F').contains(&self.peek().unwrap().to_ascii_uppercase()))
+        // The literal is an integer with a base specified.
+        if first_digit == '0'
+            && self
+                .peek()
+                .is_some_and(|&c| c == 'b' || c == 'o' || c == 'x')
         {
-            self.advance_with_callback(|| len += 1);
-        }
+            let base = match self.advance_with_callback(|| len += 1).unwrap() {
+                'b' => Binary,
+                'o' => Octal,
+                'x' => Hexadecimal,
+                _ => unreachable!(),
+            };
 
-        self.create_token(Literal(Integer { base }), len)
+            while !self.at_end()
+                && (self.peek().unwrap().is_numeric()
+                    || self.peek().unwrap().is_ascii_hexdigit()
+                    || self.peek().unwrap() == &'_')
+            {
+                self.advance_with_callback(|| len += 1);
+            }
+
+            return self.create_token(Literal(Integer { base }), len);
+        } else {
+            while !self.at_end() && self.peek().unwrap().is_numeric() {
+                self.advance_with_callback(|| len += 1);
+            }
+
+            // We have a float.
+            if let Some(&next) = self.peek()
+                && next == '.'
+            {
+                self.advance_with_callback(|| len += 1); // Consume the dot.
+
+                while !self.at_end() && self.peek().unwrap().is_numeric() {
+                    self.advance_with_callback(|| len += 1);
+                }
+
+                return self.create_token(Literal(Float), len);
+            }
+
+            return self.create_token(Literal(Integer { base: Decimal }), len);
+        }
     }
 
     /// Lex a token.
@@ -380,7 +430,7 @@ mod tests {
 
     #[test]
     fn test_lex_literals() -> anyhow::Result<()> {
-        let source = "1 100 0b0101 0b1111_0000 0xFF 0xab2 0o20";
+        let source = "1 100 0b10000001 0b1000_0001 0xFF 0xAB_CD 0xAB2 0o25 20.0 15.2587 'a' \"hi\"";
         let tokens = super::lex(source)?;
 
         pretty_assert_eq!(
@@ -388,7 +438,7 @@ mod tests {
             [
                 Token {
                     kind: Literal(Integer { base: Decimal }),
-                    span: (1..2).into()
+                    span: (1..2).into(),
                 },
                 Token {
                     kind: Literal(Integer { base: Decimal }),
@@ -396,28 +446,48 @@ mod tests {
                 },
                 Token {
                     kind: Literal(Integer { base: Binary }),
-                    span: (8..14).into(),
+                    span: (7..17).into(),
                 },
                 Token {
                     kind: Literal(Integer { base: Binary }),
-                    span: (15..26).into()
+                    span: (18..29).into(),
                 },
                 Token {
                     kind: Literal(Integer { base: Hexadecimal }),
-                    span: (27..31).into(),
+                    span: (30..34).into(),
                 },
                 Token {
                     kind: Literal(Integer { base: Hexadecimal }),
-                    span: (32..37).into()
+                    span: (35..42).into(),
+                },
+                Token {
+                    kind: Literal(Integer { base: Hexadecimal }),
+                    span: (43..48).into(),
                 },
                 Token {
                     kind: Literal(Integer { base: Octal }),
-                    span: (38..42).into(),
+                    span: (49..53).into(),
+                },
+                Token {
+                    kind: Literal(Float),
+                    span: (54..58).into(),
+                },
+                Token {
+                    kind: Literal(Float),
+                    span: (59..66).into(),
+                },
+                Token {
+                    kind: Literal(Character),
+                    span: (67..70).into()
+                },
+                Token {
+                    kind: Literal(String),
+                    span: (71..75).into(),
                 },
                 Token {
                     kind: EoF,
-                    span: (42..42).into()
-                }
+                    span: (76..76).into(),
+                },
             ]
         );
 

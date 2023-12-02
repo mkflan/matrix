@@ -1,4 +1,3 @@
-#![allow(unused)]
 #![warn(rust_2018_idioms)]
 
 use clap::Parser as CliParser;

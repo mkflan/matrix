@@ -52,6 +52,9 @@ pub enum LiteralKind {
 
     /// Integer literals.
     Integer { base: IntegerBase },
+
+    /// Float literals.
+    Float,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
