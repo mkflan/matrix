@@ -8,7 +8,7 @@ pub struct Span {
 
 impl Span {
     pub(crate) fn of_token(token_len: usize, pos: usize) -> Self {
-        Span {
+        Self {
             start: pos - token_len,
             end: pos,
         }
@@ -23,8 +23,35 @@ impl fmt::Debug for Span {
 
 impl From<Range<usize>> for Span {
     fn from(Range { start, end }: Range<usize>) -> Self {
-        Span { start, end }
+        Self { start, end }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keyword {
+    Proc,
+    Let,
+    Void,
+    Int,
+    Ret,
+    Float,
+    If,
+    Elif,
+    Else,
+    For,
+    While,
+    Do,
+    Bool,
+    Str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentKind {
+    /// A non-reserved identifier.
+    NonReserved,
+
+    /// A keyword or reserved identifier.
+    Keyword(Keyword),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,37 +117,79 @@ pub enum TokenKind {
     Comma,
 
     /// =
-    Equals,
+    Equal,
+
+    /// ==
+    EqualEqual,
 
     /// +
     Plus,
 
+    /// +=
+    PlusEqual,
+
     /// -
     Minus,
+
+    /// -=
+    MinusEqual,
 
     /// *
     Star,
 
+    /// *=
+    StarEqual,
+
     /// /
     Slash,
+
+    /// /=
+    SlashEqual,
 
     /// %
     Percent,
 
+    /// %=
+    PercentEqual,
+
     /// &
     Ampersand,
+
+    /// &=
+    AmpersandEqual,
+
+    /// &&,
+    AmpAmp,
 
     /// |
     Bar,
 
+    /// |=
+    BarEqual,
+
+    /// ||
+    BarBar,
+
+    /// !
+    Bang,
+
+    /// !=
+    BangEqual,
+
     /// <
     Lt,
+
+    /// <=
+    LtEqual,
 
     /// >
     Gt,
 
+    /// >=
+    GtEqual,
+
     /// Any identifiers, including keywords.
-    Ident,
+    Ident(IdentKind),
 
     /// Literals.
     Literal(LiteralKind),

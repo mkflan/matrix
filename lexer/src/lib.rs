@@ -1,17 +1,39 @@
-#![warn(rust_2018_idioms)]
-#![allow(unused)]
-#![feature(let_chains)]
+#![feature(let_chains, lazy_cell)]
+#![warn(rust_2018_idioms, clippy::nursery)]
+#![allow(clippy::missing_const_for_fn)]
 
 pub mod token;
 
-use anyhow::bail;
-use std::{iter::Peekable, str::Chars};
+use std::{collections::HashMap, iter::Peekable, str::Chars, sync::LazyLock};
 use token::{
+    IdentKind::*,
     IntegerBase::*,
     LiteralKind::*,
     Span, Token,
     TokenKind::{self, *},
 };
+use unicode_xid::UnicodeXID;
+
+static KEYWORDS: LazyLock<HashMap<&str, TokenKind>> = LazyLock::new(|| {
+    use crate::token::Keyword::*;
+
+    HashMap::from([
+        ("proc", Ident(Keyword(Proc))),
+        ("let", Ident(Keyword(Let))),
+        ("void", Ident(Keyword(Void))),
+        ("int", Ident(Keyword(Int))),
+        ("ret", Ident(Keyword(Ret))),
+        ("float", Ident(Keyword(Float))),
+        ("if", Ident(Keyword(If))),
+        ("elif", Ident(Keyword(Elif))),
+        ("else", Ident(Keyword(Else))),
+        ("for", Ident(Keyword(For))),
+        ("while", Ident(Keyword(While))),
+        ("do", Ident(Keyword(Do))),
+        ("bool", Ident(Keyword(Bool))),
+        ("str", Ident(Keyword(Str))),
+    ])
+});
 
 #[derive(Debug)]
 struct Lexer<'src> {
@@ -53,10 +75,10 @@ impl<'src> Lexer<'src> {
         next
     }
 
-    /// Return whether an expected character was consumed or not.
-    fn expected_consumed(&mut self, expected: char) -> bool {
+    /// Check if the next character is a specified character, returning whether it was consumed or not.
+    fn next_is(&mut self, next: char) -> bool {
         if let Some(&c) = self.peek() {
-            if c == expected {
+            if c == next {
                 self.advance();
                 return true;
             }
@@ -70,15 +92,31 @@ impl<'src> Lexer<'src> {
         self.peek().is_none()
     }
 
-    /// Lex an identifier.
-    fn lex_ident(&mut self) -> Token {
-        let mut len = 1; // the first character of the identifier has already been consumed.
+    /// Lex a potentially longer operator.
+    fn lex_potentially_longer_operator(
+        &mut self,
+        check_next: char,
+        if_next: TokenKind,
+        fallback: TokenKind,
+    ) -> Token {
+        self.next_is(check_next)
+            .then(|| self.create_token(if_next, 2))
+            .unwrap_or_else(|| self.create_token(fallback, 1))
+    }
 
-        while !self.at_end() && self.peek().unwrap().is_alphanumeric() {
-            self.advance_with_callback(|| len += 1);
+    /// Lex an identifier.
+    fn lex_ident(&mut self, first_char: char) -> Token {
+        let mut ident = std::string::String::from(first_char);
+
+        while !self.at_end() && UnicodeXID::is_xid_continue(*self.peek().unwrap()) {
+            ident.push(self.advance().unwrap());
         }
 
-        self.create_token(Ident, len)
+        let token_kind = KEYWORDS
+            .get_key_value(ident.as_str())
+            .map(|(_, tk)| *tk)
+            .unwrap_or(Ident(NonReserved));
+        self.create_token(token_kind, ident.len())
     }
 
     /// Lex a character literal.
@@ -96,7 +134,7 @@ impl<'src> Lexer<'src> {
             panic!("character literals can only contain one codepoint");
         }
 
-        if !self.expected_consumed('\'') {
+        if !self.next_is('\'') {
             panic!("unterminated character literal. expected closing quote");
         }
 
@@ -113,7 +151,7 @@ impl<'src> Lexer<'src> {
             self.advance_with_callback(|| len += 1);
         }
 
-        if !self.expected_consumed('"') {
+        if !self.next_is('"') {
             panic!("unterminated string literal. expected closing quote");
         }
 
@@ -146,7 +184,7 @@ impl<'src> Lexer<'src> {
                 self.advance_with_callback(|| len += 1);
             }
 
-            return self.create_token(Literal(Integer { base }), len);
+            self.create_token(Literal(Integer { base }), len)
         } else {
             while !self.at_end() && self.peek().unwrap().is_numeric() {
                 self.advance_with_callback(|| len += 1);
@@ -165,7 +203,7 @@ impl<'src> Lexer<'src> {
                 return self.create_token(Literal(Float), len);
             }
 
-            return self.create_token(Literal(Integer { base: Decimal }), len);
+            self.create_token(Literal(Integer { base: Decimal }), len)
         }
     }
 
@@ -186,19 +224,20 @@ impl<'src> Lexer<'src> {
             ';' => self.create_token(Semicolon, 1),
             '.' => self.create_token(Period, 1),
             ',' => self.create_token(Comma, 1),
-            '=' => self.create_token(Equals, 1),
-            '+' => self.create_token(Plus, 1),
-            '-' => self.create_token(Minus, 1),
-            '*' => self.create_token(Star, 1),
-            '/' => self.create_token(Slash, 1),
-            '%' => self.create_token(Percent, 1),
+            '=' => self.lex_potentially_longer_operator('=', EqualEqual, Equal),
+            '+' => self.lex_potentially_longer_operator('=', PlusEqual, Plus),
+            '-' => self.lex_potentially_longer_operator('=', MinusEqual, Minus),
+            '*' => self.lex_potentially_longer_operator('=', StarEqual, Star),
+            '/' => self.lex_potentially_longer_operator('=', SlashEqual, Slash),
+            '%' => self.lex_potentially_longer_operator('=', PercentEqual, Percent),
             '&' => self.create_token(Ampersand, 1),
             '|' => self.create_token(Bar, 1),
+            '!' => self.lex_potentially_longer_operator('=', BangEqual, Bang),
             '<' => self.create_token(Lt, 1),
             '>' => self.create_token(Gt, 1),
             '"' => self.lex_string_literal(),
             '\'' => self.lex_char_literal(),
-            ch if ch.is_alphabetic() || ch == '_' => self.lex_ident(),
+            ch if UnicodeXID::is_xid_start(ch) || ch == '_' => self.lex_ident(ch),
             ch if ch.is_numeric() => self.lex_numerical_literal(ch),
             ch if ch.is_whitespace() => self.lex_token()?,
             _ => panic!("unknown token: {ch}"),
@@ -215,7 +254,7 @@ pub fn lex(code: &str) -> anyhow::Result<Vec<Token>> {
     while let Ok(token) = lexer.lex_token() {
         tokens.push(token);
 
-        if let EoF = token.kind {
+        if token.kind == EoF {
             break;
         }
     }
@@ -225,7 +264,7 @@ pub fn lex(code: &str) -> anyhow::Result<Vec<Token>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::token::{IntegerBase::*, LiteralKind::*, Token, TokenKind::*};
+    use crate::token::{IdentKind::*, IntegerBase::*, Token, TokenKind::*};
     use pretty_assertions::assert_eq as pretty_assert_eq;
 
     #[test]
@@ -288,56 +327,88 @@ mod tests {
 
     #[test]
     fn test_lex_operators() -> anyhow::Result<()> {
-        let source = "=+-*/%&|<>";
+        let source = "= == + += - -= * *= / /= % %= & | ! != < >";
         let tokens = super::lex(source)?;
 
         pretty_assert_eq!(
             tokens,
             [
                 Token {
-                    kind: Equals,
-                    span: (1..2).into()
+                    kind: Equal,
+                    span: (1..2).into(),
+                },
+                Token {
+                    kind: EqualEqual,
+                    span: (3..5).into(),
                 },
                 Token {
                     kind: Plus,
-                    span: (2..3).into()
+                    span: (6..7).into(),
+                },
+                Token {
+                    kind: PlusEqual,
+                    span: (8..10).into(),
                 },
                 Token {
                     kind: Minus,
-                    span: (3..4).into()
+                    span: (11..12).into(),
+                },
+                Token {
+                    kind: MinusEqual,
+                    span: (13..15).into(),
                 },
                 Token {
                     kind: Star,
-                    span: (4..5).into()
+                    span: (16..17).into(),
+                },
+                Token {
+                    kind: StarEqual,
+                    span: (18..20).into(),
                 },
                 Token {
                     kind: Slash,
-                    span: (5..6).into()
+                    span: (21..22).into(),
+                },
+                Token {
+                    kind: SlashEqual,
+                    span: (23..25).into(),
                 },
                 Token {
                     kind: Percent,
-                    span: (6..7).into()
+                    span: (26..27).into(),
+                },
+                Token {
+                    kind: PercentEqual,
+                    span: (28..30).into(),
                 },
                 Token {
                     kind: Ampersand,
-                    span: (7..8).into()
+                    span: (31..32).into(),
                 },
                 Token {
                     kind: Bar,
-                    span: (8..9).into()
+                    span: (33..34).into(),
+                },
+                Token {
+                    kind: Bang,
+                    span: (35..36).into(),
+                },
+                Token {
+                    kind: BangEqual,
+                    span: (37..39).into(),
                 },
                 Token {
                     kind: Lt,
-                    span: (9..10).into()
+                    span: (40..41).into()
                 },
                 Token {
                     kind: Gt,
-                    span: (10..11).into()
+                    span: (42..43).into(),
                 },
                 Token {
                     kind: EoF,
-                    span: (12..12).into()
-                }
+                    span: (44..44).into(),
+                },
             ]
         );
 
@@ -346,42 +417,126 @@ mod tests {
 
     #[test]
     fn test_lex_keywords() -> anyhow::Result<()> {
-        let source = "proc let void int ret float";
+        use crate::token::Keyword::*;
+
+        let source = "proc let void int ret float if elif else for while do";
         let tokens = super::lex(source)?;
 
         pretty_assert_eq!(
             tokens,
             [
                 Token {
-                    kind: Ident,
+                    kind: Ident(Keyword(Proc)),
                     span: (1..5).into(),
                 },
                 Token {
-                    kind: Ident,
+                    kind: Ident(Keyword(Let)),
                     span: (6..9).into(),
                 },
                 Token {
-                    kind: Ident,
+                    kind: Ident(Keyword(Void)),
                     span: (10..14).into(),
                 },
                 Token {
-                    kind: Ident,
+                    kind: Ident(Keyword(Int)),
                     span: (15..18).into(),
                 },
                 Token {
-                    kind: Ident,
+                    kind: Ident(Keyword(Ret)),
                     span: (19..22).into(),
                 },
                 Token {
-                    kind: Ident,
-                    span: (23..28).into()
+                    kind: Ident(Keyword(Float)),
+                    span: (23..28).into(),
+                },
+                Token {
+                    kind: Ident(Keyword(If)),
+                    span: (29..31).into(),
+                },
+                Token {
+                    kind: Ident(Keyword(Elif)),
+                    span: (32..36).into(),
+                },
+                Token {
+                    kind: Ident(Keyword(Else)),
+                    span: (37..41).into(),
+                },
+                Token {
+                    kind: Ident(Keyword(For)),
+                    span: (42..45).into(),
+                },
+                Token {
+                    kind: Ident(Keyword(While)),
+                    span: (46..51).into(),
+                },
+                Token {
+                    kind: Ident(Keyword(Do)),
+                    span: (52..54).into(),
                 },
                 Token {
                     kind: EoF,
-                    span: (29..29).into(),
+                    span: (55..55).into(),
                 },
             ]
         );
+
+        // pretty_assert_eq!(
+        //     tokens,
+        //     [
+        //         Token {
+        //             kind: Ident,
+        //             span: (1..5).into(),
+        //         },
+        //         Token {
+        //             kind: Ident,
+        //             span: (6..9).into(),
+        //         },
+        //         Token {
+        //             kind: Ident,
+        //             span: (10..14).into(),
+        //         },
+        //         Token {
+        //             kind: Ident,
+        //             span: (15..18).into(),
+        //         },
+        //         Token {
+        //             kind: Ident,
+        //             span: (19..22).into(),
+        //         },
+        //         Token {
+        //             kind: Ident,
+        //             span: (23..28).into()
+        //         },
+        //         Token {
+        //             kind: Ident,
+        //             span: (29..31).into(),
+        //         },
+        //         Token {
+        //             kind: Ident,
+        //             span: (32..36).into(),
+        //         },
+        //         Token {
+        //             kind: Ident,
+        //             span: (37..41).into(),
+        //         },
+        //         Token {
+        //             kind: Ident,
+        //             span: (42..45).into(),
+        //         },
+        //         Token {
+        //             kind: Ident,
+        //             span: (46..51).into(),
+        //         },
+        //         Token {
+        //             kind: Ident,
+        //             span: (52..54).into(),
+        //         },
+        //         Token {
+        //             kind: EoF,
+        //             span: (55..55).into(),
+        //         },
+        //     ]
+        // );
 
         Ok(())
     }
@@ -395,27 +550,27 @@ mod tests {
             tokens,
             [
                 Token {
-                    kind: Ident,
+                    kind: Ident(NonReserved),
                     span: (1..3).into(),
                 },
                 Token {
-                    kind: Ident,
+                    kind: Ident(NonReserved),
                     span: (4..5).into(),
                 },
                 Token {
-                    kind: Ident,
+                    kind: Ident(NonReserved),
                     span: (6..7).into(),
                 },
                 Token {
-                    kind: Ident,
+                    kind: Ident(NonReserved),
                     span: (8..12).into(),
                 },
                 Token {
-                    kind: Ident,
+                    kind: Ident(NonReserved),
                     span: (13..16).into(),
                 },
                 Token {
-                    kind: Ident,
+                    kind: Ident(NonReserved),
                     span: (17..20).into(),
                 },
                 Token {
@@ -430,6 +585,8 @@ mod tests {
 
     #[test]
     fn test_lex_literals() -> anyhow::Result<()> {
+        use crate::token::LiteralKind::*;
+
         let source = "1 100 0b10000001 0b1000_0001 0xFF 0xAB_CD 0xAB2 0o25 20.0 15.2587 'a' \"hi\"";
         let tokens = super::lex(source)?;
 

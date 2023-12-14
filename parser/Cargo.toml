@@ -1,11 +1,8 @@
 [package]
-name = "lexer"
+name = "parser"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 anyhow.workspace = true
-unicode-xid = "0.2.4"
-
-[dev-dependencies]
-pretty_assertions = "1.4.0"
+lexer = { path = "../lexer" }

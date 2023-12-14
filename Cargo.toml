@@ -1,5 +1,5 @@
 [workspace]
-members = ["matrix", "lexer"]
+members = ["matrix", "lexer", "parser"]
 resolver = "2"
 
 [workspace.dependencies]
