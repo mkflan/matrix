@@ -1,21 +1,27 @@
-#![feature(let_chains, lazy_cell)]
+#![feature(let_chains, lazy_cell, is_ascii_octdigit)]
 #![warn(rust_2018_idioms, clippy::nursery)]
-#![allow(clippy::missing_const_for_fn)]
+#![allow(clippy::missing_const_for_fn, unused)]
 
+mod diagnostics;
 pub mod token;
 
+use diagnostics::{
+    DiagnosticSink,
+    LexDiagnostic::{self, *},
+};
+use span::Span;
 use std::{collections::HashMap, iter::Peekable, str::Chars, sync::LazyLock};
 use token::{
     IdentKind::*,
     IntegerBase::*,
     LiteralKind::*,
-    Span, Token,
+    Token,
     TokenKind::{self, *},
 };
 use unicode_xid::UnicodeXID;
 
 static KEYWORDS: LazyLock<HashMap<&str, TokenKind>> = LazyLock::new(|| {
-    use crate::token::Keyword::*;
+    use crate::token::{Keyword::*, LiteralKind::Boolean};
 
     HashMap::from([
         ("proc", Ident(Keyword(Proc))),
@@ -32,6 +38,8 @@ static KEYWORDS: LazyLock<HashMap<&str, TokenKind>> = LazyLock::new(|| {
         ("do", Ident(Keyword(Do))),
         ("bool", Ident(Keyword(Bool))),
         ("str", Ident(Keyword(Str))),
+        ("true", Literal(Boolean)),
+        ("false", Literal(Boolean)),
     ])
 });
 
@@ -54,7 +62,7 @@ impl<'src> Lexer<'src> {
 
     /// Create a new token.
     fn create_token(&self, token_kind: TokenKind, token_len: usize) -> Token {
-        Token::new(token_kind, Span::of_token(token_len, self.cursor.1))
+        Token::new(token_kind, Span::new(token_len, self.cursor.1))
     }
 
     /// Peek the next character in the source.
@@ -120,31 +128,53 @@ impl<'src> Lexer<'src> {
     }
 
     /// Lex a character literal.
-    // TODO: handle when the  literal contains an escaped single quote. currently,
+    // TODO: handle when the literal contains an escaped single quote. currently,
     // it will panic as it believes the escaped quote is the closing quote.
-    fn lex_char_literal(&mut self) -> Token {
-        let mut len = 1; // The opening quote has already been consumed.
+    fn lex_char_literal(&mut self) -> Result<Token, LexDiagnostic> {
+        let mut len = 1;
+
+        if self.at_end() {
+            return Err(UnterminatedCharacterLiteral(Span::new(len, self.cursor.1)));
+        }
 
         while !self.at_end() && self.peek().unwrap() != &'\'' {
             self.advance_with_callback(|| len += 1);
         }
 
-        // The character contains more than one codepoint.
-        if len > 2 {
-            panic!("character literals can only contain one codepoint");
-        }
+        // if self.next_is('\'') {
+        //     consumed.push('\'');
+        // }
 
-        if !self.next_is('\'') {
-            panic!("unterminated character literal. expected closing quote");
+        if len == 2 {
+            return Err(EmptyCharacterLiteral(Span::new(len + 1, self.cursor.1 - 1)));
         }
+        // if !self.next_is('\'') {
+        //     return Err(UnterminatedCharacterLiteral(Span::new(
+        //         consumed.len(),
+        //         self.cursor.1,
+        //     )));
+        // }
 
-        self.create_token(Literal(Character), 3)
+        // if len > 2 {
+        //     return Err(CharacterLiteralOneCodePoint(Span::new(
+        //         len,
+        //         self.cursor.1 - 1,
+        //     )));
+        // }
+
+        // if len > 2 {
+        //     return Err(CharacterLiteralOneCodePoint(Span::new(
+        //         len,
+        //         self.cursor.1 - 1,
+        //     )));
+        // }
+        Ok(self.create_token(Literal(Character), len))
     }
 
     /// Lex a string literal.
     // TODO: handle when the literal contains an escaped double quote. currently,
     // it will panic as it believes the escaped quote is the closing quote.
-    fn lex_string_literal(&mut self) -> Token {
+    fn lex_string_literal(&mut self) -> Result<Token, LexDiagnostic> {
         let mut len = 1; // The opening quote has already been consumed.
 
         while !self.at_end() && self.peek().unwrap() != &'"' {
@@ -152,14 +182,17 @@ impl<'src> Lexer<'src> {
         }
 
         if !self.next_is('"') {
-            panic!("unterminated string literal. expected closing quote");
+            let span = Span::new(len, self.cursor.1);
+
+            return Err(UnterminatedStringLiteral(span));
         }
 
         len += 1;
-        self.create_token(Literal(String), len)
+        Ok(self.create_token(Literal(String), len))
     }
 
-    /// Lex a numerical literal.
+    // Lex a numerical literal.
+    // TODO: handle when a literal with a base is empty doesn't have any digits or when it has invalid digits for that base.
     fn lex_numerical_literal(&mut self, first_digit: char) -> Token {
         let mut len = 1; // The first digit has already been consumed.
 
@@ -176,12 +209,33 @@ impl<'src> Lexer<'src> {
                 _ => unreachable!(),
             };
 
-            while !self.at_end()
-                && (self.peek().unwrap().is_numeric()
-                    || self.peek().unwrap().is_ascii_hexdigit()
-                    || self.peek().unwrap() == &'_')
-            {
-                self.advance_with_callback(|| len += 1);
+            match base {
+                Binary => {
+                    while !self.at_end()
+                        && (self.peek().unwrap() == &'0'
+                            || self.peek().unwrap() == &'1'
+                            || self.peek().unwrap() == &'_')
+                    {
+                        self.advance_with_callback(|| len += 1);
+                    }
+                }
+                Octal => {
+                    while !self.at_end()
+                        && (self.peek().unwrap().is_ascii_octdigit()
+                            || self.peek().unwrap() == &'_')
+                    {
+                        self.advance_with_callback(|| len += 1);
+                    }
+                }
+                Hexadecimal => {
+                    while !self.at_end()
+                        && (self.peek().unwrap().is_ascii_hexdigit()
+                            || self.peek().unwrap() == &'_')
+                    {
+                        self.advance_with_callback(|| len += 1);
+                    }
+                }
+                _ => unreachable!(),
             }
 
             self.create_token(Literal(Integer { base }), len)
@@ -208,55 +262,68 @@ impl<'src> Lexer<'src> {
     }
 
     /// Lex a token.
-    fn lex_token(&mut self) -> anyhow::Result<Token> {
+    /// TODO: lexing for <<, <<=, >>, >>=, &=, &&, |=, ||
+    fn lex_token(&mut self) -> Result<Token, LexDiagnostic> {
         let Some(ch) = self.advance() else {
             return Ok(self.create_token(EoF, 0));
         };
 
-        let token = match ch {
-            '(' => self.create_token(OpenParen, 1),
-            ')' => self.create_token(ClosingParen, 1),
-            '{' => self.create_token(OpenCurly, 1),
-            '}' => self.create_token(ClosingCurly, 1),
-            '[' => self.create_token(OpenSquare, 1),
-            ']' => self.create_token(ClosingSquare, 1),
-            ':' => self.create_token(Colon, 1),
-            ';' => self.create_token(Semicolon, 1),
-            '.' => self.create_token(Period, 1),
-            ',' => self.create_token(Comma, 1),
-            '=' => self.lex_potentially_longer_operator('=', EqualEqual, Equal),
-            '+' => self.lex_potentially_longer_operator('=', PlusEqual, Plus),
-            '-' => self.lex_potentially_longer_operator('=', MinusEqual, Minus),
-            '*' => self.lex_potentially_longer_operator('=', StarEqual, Star),
-            '/' => self.lex_potentially_longer_operator('=', SlashEqual, Slash),
-            '%' => self.lex_potentially_longer_operator('=', PercentEqual, Percent),
-            '&' => self.create_token(Ampersand, 1),
-            '|' => self.create_token(Bar, 1),
-            '!' => self.lex_potentially_longer_operator('=', BangEqual, Bang),
-            '<' => self.create_token(Lt, 1),
-            '>' => self.create_token(Gt, 1),
+        match ch {
+            '(' => Ok(self.create_token(OpenParen, 1)),
+            ')' => Ok(self.create_token(ClosingParen, 1)),
+            '{' => Ok(self.create_token(OpenCurly, 1)),
+            '}' => Ok(self.create_token(ClosingCurly, 1)),
+            '[' => Ok(self.create_token(OpenSquare, 1)),
+            ']' => Ok(self.create_token(ClosingSquare, 1)),
+            ':' => Ok(self.create_token(Colon, 1)),
+            ';' => Ok(self.create_token(Semicolon, 1)),
+            '.' => Ok(self.create_token(Period, 1)),
+            ',' => Ok(self.create_token(Comma, 1)),
+            '=' => Ok(self.lex_potentially_longer_operator('=', EqualEqual, Equal)),
+            '+' => Ok(self.lex_potentially_longer_operator('=', PlusEqual, Plus)),
+            '-' => Ok(self.lex_potentially_longer_operator('=', MinusEqual, Minus)),
+            '*' => Ok(self.lex_potentially_longer_operator('=', StarEqual, Star)),
+            '/' => Ok(self.lex_potentially_longer_operator('=', SlashEqual, Slash)),
+            '%' => Ok(self.lex_potentially_longer_operator('=', PercentEqual, Percent)),
+            '&' => Ok(self.create_token(Ampersand, 1)),
+            '|' => Ok(self.create_token(Bar, 1)),
+            '~' => Ok(self.create_token(Tilde, 1)),
+            '!' => Ok(self.lex_potentially_longer_operator('=', BangEqual, Bang)),
+            '<' => Ok(self.create_token(Lt, 1)),
+            '>' => Ok(self.create_token(Gt, 1)),
             '"' => self.lex_string_literal(),
             '\'' => self.lex_char_literal(),
-            ch if UnicodeXID::is_xid_start(ch) || ch == '_' => self.lex_ident(ch),
-            ch if ch.is_numeric() => self.lex_numerical_literal(ch),
-            ch if ch.is_whitespace() => self.lex_token()?,
-            _ => panic!("unknown token: {ch}"),
-        };
-
-        Ok(token)
+            ch if UnicodeXID::is_xid_start(ch) || ch == '_' => Ok(self.lex_ident(ch)),
+            ch if ch.is_numeric() => Ok(self.lex_numerical_literal(ch)),
+            ch if ch.is_whitespace() => self.lex_token(),
+            _ => Err(LexDiagnostic::UnexpectedCharacter(
+                ch,
+                Span::new(1, self.cursor.1 - 1),
+            )),
+        }
     }
 }
 
-pub fn lex(code: &str) -> anyhow::Result<Vec<Token>> {
-    let mut tokens = Vec::<Token>::new();
+pub fn lex(code: &str) -> Result<Vec<Token>, DiagnosticSink> {
     let mut lexer = Lexer::new(code);
+    let mut tokens = Vec::<Token>::new();
+    let mut diagnostics = DiagnosticSink::new();
 
-    while let Ok(token) = lexer.lex_token() {
-        tokens.push(token);
+    loop {
+        match lexer.lex_token() {
+            Ok(token) => {
+                tokens.push(token);
 
-        if token.kind == EoF {
-            break;
+                if token.kind == EoF {
+                    break;
+                }
+            }
+            Err(diagnostic) => diagnostics.push_diagnostic(diagnostic),
         }
+    }
+
+    if diagnostics.has_diagnostics() {
+        return Err(diagnostics);
     }
 
     Ok(tokens)
@@ -327,7 +394,7 @@ mod tests {
 
     #[test]
     fn test_lex_operators() -> anyhow::Result<()> {
-        let source = "= == + += - -= * *= / /= % %= & | ! != < >";
+        let source = "= == + += - -= * *= / /= % %= & | ~ ! != < >";
         let tokens = super::lex(source)?;
 
         pretty_assert_eq!(
@@ -390,24 +457,28 @@ mod tests {
                     span: (33..34).into(),
                 },
                 Token {
-                    kind: Bang,
+                    kind: Tilde,
                     span: (35..36).into(),
                 },
                 Token {
+                    kind: Bang,
+                    span: (37..38).into(),
+                },
+                Token {
                     kind: BangEqual,
-                    span: (37..39).into(),
+                    span: (39..41).into()
                 },
                 Token {
                     kind: Lt,
-                    span: (40..41).into()
-                },
-                Token {
-                    kind: Gt,
                     span: (42..43).into(),
                 },
                 Token {
+                    kind: Gt,
+                    span: (44..45).into(),
+                },
+                Token {
                     kind: EoF,
-                    span: (44..44).into(),
+                    span: (46..46).into(),
                 },
             ]
         );
@@ -479,64 +550,6 @@ mod tests {
                 },
             ]
         );
-
-        // pretty_assert_eq!(
-        //     tokens,
-        //     [
-        //         Token {
-        //             kind: Ident,
-        //             span: (1..5).into(),
-        //         },
-        //         Token {
-        //             kind: Ident,
-        //             span: (6..9).into(),
-        //         },
-        //         Token {
-        //             kind: Ident,
-        //             span: (10..14).into(),
-        //         },
-        //         Token {
-        //             kind: Ident,
-        //             span: (15..18).into(),
-        //         },
-        //         Token {
-        //             kind: Ident,
-        //             span: (19..22).into(),
-        //         },
-        //         Token {
-        //             kind: Ident,
-        //             span: (23..28).into()
-        //         },
-        //         Token {
-        //             kind: Ident,
-        //             span: (29..31).into(),
-        //         },
-        //         Token {
-        //             kind: Ident,
-        //             span: (32..36).into(),
-        //         },
-        //         Token {
-        //             kind: Ident,
-        //             span: (37..41).into(),
-        //         },
-        //         Token {
-        //             kind: Ident,
-        //             span: (42..45).into(),
-        //         },
-        //         Token {
-        //             kind: Ident,
-        //             span: (46..51).into(),
-        //         },
-        //         Token {
-        //             kind: Ident,
-        //             span: (52..54).into(),
-        //         },
-        //         Token {
-        //             kind: EoF,
-        //             span: (55..55).into(),
-        //         },
-        //     ]
-        // );
 
         Ok(())
     }

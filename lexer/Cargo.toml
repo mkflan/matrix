@@ -4,8 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow.workspace = true
+thiserror.workspace = true
 unicode-xid = "0.2.4"
+ariadne = "0.3.0"
+miette.workspace = true
+span = { path = "../span" }
 
 [dev-dependencies]
 pretty_assertions = "1.4.0"
+anyhow.workspace = true

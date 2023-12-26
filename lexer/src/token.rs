@@ -1,31 +1,4 @@
-use std::{fmt, ops::Range};
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Span {
-    pub start: usize,
-    pub end: usize,
-}
-
-impl Span {
-    pub(crate) fn of_token(token_len: usize, pos: usize) -> Self {
-        Self {
-            start: pos - token_len,
-            end: pos,
-        }
-    }
-}
-
-impl fmt::Debug for Span {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}..{}", self.start, self.end)
-    }
-}
-
-impl From<Range<usize>> for Span {
-    fn from(Range { start, end }: Range<usize>) -> Self {
-        Self { start, end }
-    }
-}
+use span::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Keyword {
@@ -82,6 +55,9 @@ pub enum LiteralKind {
 
     /// Float literals.
     Float,
+
+    /// Boolean literals.
+    Boolean,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +146,9 @@ pub enum TokenKind {
     /// ||
     BarBar,
 
+    /// ~
+    Tilde,
+
     /// !
     Bang,
 
@@ -188,6 +167,18 @@ pub enum TokenKind {
     /// >=
     GtEqual,
 
+    /// <<
+    Shl,
+
+    /// <<=
+    ShlEqual,
+
+    /// >>
+    Shr,
+
+    /// >>=
+    ShrEqual,
+
     /// Any identifiers, including keywords.
     Ident(IdentKind),
 
@@ -196,6 +187,68 @@ pub enum TokenKind {
 
     /// End of file.
     EoF,
+}
+
+impl TokenKind {
+    /// Return if this token kind is a unary operator or not.
+    pub fn is_unary_op(self) -> bool {
+        use TokenKind::{Bang, Minus, Tilde};
+
+        matches!(self, Bang | Minus | Tilde)
+    }
+
+    /// Return if this token kind is a binary operator or not.
+    pub fn is_binary_op(self) -> bool {
+        use TokenKind::{
+            AmpAmp, Ampersand, AmpersandEqual, BangEqual, Bar, BarBar, BarEqual, Equal, EqualEqual,
+            Gt, GtEqual, Lt, LtEqual, Minus, MinusEqual, Percent, PercentEqual, Plus, PlusEqual,
+            Shl, ShlEqual, Shr, ShrEqual, Slash, SlashEqual, Star, StarEqual,
+        };
+
+        matches!(
+            self,
+            EqualEqual
+                | Plus
+                | PlusEqual
+                | Minus
+                | MinusEqual
+                | Star
+                | StarEqual
+                | Slash
+                | SlashEqual
+                | Percent
+                | PercentEqual
+                | Ampersand
+                | AmpersandEqual
+                | AmpAmp
+                | Bar
+                | BarEqual
+                | BarBar
+                | BangEqual
+                | Lt
+                | LtEqual
+                | Gt
+                | GtEqual
+                | Shl
+                | ShlEqual
+                | Shr
+                | ShrEqual
+        )
+    }
+
+    /// Returns if this token kind is a comparison operator or not.
+    pub fn is_comparison_op(self) -> bool {
+        use TokenKind::{Gt, GtEqual, Lt, LtEqual};
+
+        matches!(self, Lt | LtEqual | Gt | GtEqual)
+    }
+
+    /// Returns if this token kind is an equality operator or not.
+    pub fn is_equality_op(self) -> bool {
+        use TokenKind::{BangEqual, EqualEqual};
+
+        matches!(self, BangEqual | EqualEqual)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

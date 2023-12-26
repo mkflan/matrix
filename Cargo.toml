@@ -1,6 +1,8 @@
 [workspace]
-members = ["matrix", "lexer", "parser"]
+members = ["matrix", "lexer", "parser", "span"]
 resolver = "2"
 
 [workspace.dependencies]
-anyhow = "1.0.75"
+thiserror = "1.0.51"
+miette = "5.10.0"
+anyhow = "1.0.76"
